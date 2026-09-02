@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 Circle Internet Group, Inc.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -7,23 +25,27 @@ import {
   fetchOnrampSession,
   type OnrampEventEnvelope,
 } from '@crcl-main/onramp-kit'
+import { WIDGET_BASE_URL, type OnrampEnvironment } from '@/lib/onramp-environment'
 import { BottomNav, tabs, type TabId } from './bottom-nav'
 import { HomeScreen } from './home-screen'
 import { OnrampSheet } from './onramp-sheet'
 import { StatusBar } from './status-bar'
 import { useActivity } from './use-activity'
+import { useBalance } from './use-balance'
 import { WalletScreen } from './wallet-screen'
 
 type OnrampSession = Awaited<ReturnType<typeof fetchOnrampSession>>
 
 const SESSION_URL = '/api/onramp/session'
 
-// The widget renders inside the phone unless NEXT_PUBLIC_EMBEDDED_ONRAMP is set
-// to 0 or false, which opens it in a popup instead. It has to be read as this
-// exact expression: Next inlines it at build time, so destructuring or dynamic
-// lookup won't work, and `next dev` only picks up a change on restart.
-const EMBEDDED = !['0', 'false'].includes(
-  (process.env.NEXT_PUBLIC_EMBEDDED_ONRAMP ?? '').trim().toLowerCase()
+// The widget renders inside the phone. Setting NEXT_PUBLIC_ONRAMP_POPUP to 1 or
+// true opts into opening the hosted experience in a popup window instead, which
+// is the escape hatch for providers whose own `frame-ancestors` refuse to be
+// nested inside a host origin. It has to be read as this exact expression: Next
+// inlines it at build time, so destructuring or dynamic lookup won't work, and
+// `next dev` only picks up a change on restart.
+const POPUP_REQUESTED = ['1', 'true'].includes(
+  (process.env.NEXT_PUBLIC_ONRAMP_POPUP ?? '').trim().toLowerCase()
 )
 
 // USDC only, and only on chains a MetaMask address can actually receive on.
@@ -62,13 +84,28 @@ function tintSurround(session: OnrampSession): OnrampSession {
 
 const order = tabs.map((tab) => tab.id)
 
-export function PhoneApp() {
+export function PhoneApp({
+  environment,
+}: {
+  /** Resolved on the server from the two base URLs. */
+  environment: OnrampEnvironment
+}) {
+  // Embedding is a sandbox-only capability. The production widget only accepts
+  // being framed by origins registered with Circle, so a demo served from
+  // localhost gets a cross-origin refusal and an empty sheet instead of the
+  // flow. Popup mode has no such constraint, so production always uses it —
+  // whatever NEXT_PUBLIC_ONRAMP_POPUP says.
+  const popup = POPUP_REQUESTED || environment === 'production'
+
   const [tab, setTab] = useState<TabId>('home')
   const [enter, setEnter] = useState('animate-screen-in')
 
   const [address, setAddress] = useState<string | null>(null)
+  // Set once the wallet has been asked whether it is already connected. Until
+  // then "no address" means "not asked yet", and announcing a disconnected
+  // wallet would flash at every user who has one connected.
+  const [probed, setProbed] = useState(false)
   const [session, setSession] = useState<OnrampSession | null>(null)
-  const [balance, setBalance] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
 
@@ -85,9 +122,7 @@ export function PhoneApp() {
   const kitRef = useRef<ReturnType<typeof createOnrampKit> | null>(null)
   // Lazily constructed so nothing touches `window` during SSR. The getter is
   // synchronous, which openWindow requires.
-  const getKit = () => (kitRef.current ??= createOnrampKit({
-    widgetBaseUrl: process.env.NEXT_PUBLIC_ONRAMP_WIDGET_BASE_URL,
-  }))
+  const getKit = () => (kitRef.current ??= createOnrampKit({ widgetBaseUrl: WIDGET_BASE_URL }))
 
   // Sessions are single-use and openWindow must run synchronously inside the
   // click handler, so one is always minted ahead of time.
@@ -108,49 +143,46 @@ export function PhoneApp() {
     }
   }, [])
 
-  // Mainnet USDC balance, shown purely as context. A failure here is silent:
-  // the balance is decoration, and nothing about buying depends on it. The ref
-  // drops responses for an address the user has already switched away from.
-  const balanceForRef = useRef<string | null>(null)
-  const loadBalance = useCallback(async (owner: string) => {
-    try {
-      const res = await fetch(`/api/balance?address=${owner}`)
-      if (!res.ok) return
-      const { balance: next } = (await res.json()) as { balance: string }
-      if (balanceForRef.current === owner) setBalance(next)
-    } catch {
-      // Leave the balance at zero rather than showing a broken figure.
-    }
-  }, [])
+  // USDC on whichever chain MetaMask has selected, polled through the wallet's
+  // own provider and shown purely as context — the chain is named on screen.
+  // `refresh` re-reads it at the moments a poll would otherwise lag behind.
+  const { balance, chain, unsupported, switchTarget, switchNetwork, refresh } = useBalance(address)
 
   // The single place an address enters the app, so minting stays an event
   // reaction rather than something an effect has to chase.
   const adoptAddress = useCallback(
     (next: string | null) => {
       setAddress(next)
-      setBalance(null)
-      balanceForRef.current = next
       if (next) {
         void mintSession(next)
-        void loadBalance(next)
       } else {
         setSession(null)
         setSheetOpen(false)
       }
     },
-    [mintSession, loadBalance],
+    [mintSession],
   )
 
   // Restore an already-connected MetaMask account without prompting, and stay
   // subscribed to account switches.
   useEffect(() => {
     const provider = window.ethereum
-    if (!provider) return
 
-    provider
-      .request({ method: 'eth_accounts' })
-      .then((accounts) => adoptAddress((accounts as string[])[0] ?? null))
-      .catch(() => { })
+    // Resolves in every case, a missing wallet extension included, so the
+    // screen can tell "not asked yet" from "nothing connected".
+    const probe = provider
+      ? provider
+          .request({ method: 'eth_accounts' })
+          .then((accounts) => (accounts as string[])[0] ?? null)
+          .catch(() => null)
+      : Promise.resolve(null)
+
+    void probe.then((next) => {
+      adoptAddress(next)
+      setProbed(true)
+    })
+
+    if (!provider) return
 
     const onAccountsChanged = (...args: never[]) => {
       const accounts = args[0] as unknown as string[]
@@ -213,9 +245,9 @@ export function PhoneApp() {
       const done =
         envelope.event === ONRAMP_EVENT_TYPES.DEPOSIT_SETTLED ||
         envelope.payload.settlementExpected === false
-      if (done && address) void loadBalance(address)
+      if (done) refresh()
     },
-    [record, loadBalance, address],
+    [record, refresh],
   )
 
   // Embedded mode. The widget lives in a sheet over the phone screen, so it
@@ -245,18 +277,17 @@ export function PhoneApp() {
     void mintSession(address)
     // A deposit can settle in the seconds around the close, which produces no
     // event once the iframe is gone. Re-reading here catches that case.
-    void loadBalance(address)
+    refresh()
   }
 
+  // Inert without a wallet, and on a chain the balance can't be read on: a
+  // purchase would still be delivered there, but the screen has no figure to
+  // move afterwards, so the prompt under the balance is the thing to do first.
   function addMoney() {
-    if (!address) {
-      changeTab('wallet')
-      return
-    }
-    if (!session) return
+    if (!address || unsupported || !session) return
     setError(null)
 
-    if (EMBEDDED) {
+    if (!popup) {
       setSheetOpen(true)
       return
     }
@@ -280,14 +311,45 @@ export function PhoneApp() {
   return (
     <div className="relative flex h-full flex-col bg-background">
       <StatusBar />
+      {environment === 'sandbox' && (
+        // Sits above the sheet, so it stays visible while the widget is open.
+        <div className="flex shrink-0 items-center justify-center gap-2 bg-muted py-1.5 text-xs font-medium tracking-tight text-muted-foreground">
+          <span className="size-1.5 rounded-full bg-primary" />
+          Sandbox · no real money moves
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div key={tab} className={`flex min-h-0 flex-1 flex-col ${enter}`}>
           {tab === 'home' ? (
             <HomeScreen
               balance={Number(balance ?? 0)}
+              balanceChain={chain?.label}
+              prompt={
+                probed && !address
+                  ? {
+                      note: 'Wallet disconnected',
+                      action: 'Connect a wallet',
+                      onAction: () => changeTab('wallet'),
+                    }
+                  : address && unsupported
+                    ? {
+                        note: 'Unsupported network',
+                        action: `Switch to ${switchTarget.label}`,
+                        onAction: switchNetwork,
+                      }
+                    : null
+              }
               activity={activity}
               onAddMoney={addMoney}
-              addMoneyHint={address && !session ? 'Preparing session…' : null}
+              addMoneyHint={
+                !address
+                  ? 'Connect a wallet'
+                  : unsupported
+                    ? 'Switch to a supported network'
+                    : !session
+                      ? 'Preparing session…'
+                      : null
+              }
             />
           ) : (
             <WalletScreen address={address} onConnect={connect} onDisconnect={disconnect} />
