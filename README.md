@@ -29,8 +29,7 @@ open Circle's hosted onramp experience from the browser.
 ## Prerequisites
 
 - **Node.js 20.9 or later** — See the
-[Node.js download page](https://nodejs.org/en/download). Node 22 is the safest
-choice for the canary builds.
+[Node.js download page](https://nodejs.org/en/download). Node 22 is recommended.
 - **MetaMask** — Install the
 [MetaMask browser extension](https://metamask.io/download/)
 - **Circle Developer account and kit key** — Create and manage kit keys in the
@@ -80,7 +79,7 @@ environment you intend to run.
 1. The user connects a MetaMask account from the **Wallet** tab.
 2. The browser requests a session from `POST /api/onramp/session`, providing the
   connected wallet as the destination address.
-3. The server uses `@crcl-main/onramp-kit` and `ONRAMP_KIT_KEY` to create a
+3. The server uses `@circle-fin/onramp-kit` and `ONRAMP_KIT_KEY` to create a
   single-use session.
 4. Selecting **Add money** opens Circle's hosted onramp experience with that
   session, mounted in a sheet over the phone screen.
