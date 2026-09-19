@@ -19,7 +19,7 @@
 import {
   createOnrampServerKit,
   createSessionRouteHandler,
-} from '@crcl-main/onramp-kit/server'
+} from '@circle-fin/onramp-kit/server'
 import { API_BASE_URL, ENVIRONMENT } from '@/lib/server-environment'
 import { WIDGET_BASE_URL } from '@/lib/onramp-environment'
 
