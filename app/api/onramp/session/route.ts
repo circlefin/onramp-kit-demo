@@ -38,7 +38,7 @@ if (!kitKey) {
 // defaults, https://api.circle.com and https://onramp.arc.io, which is mainnet
 // and moves real money.
 const server = createOnrampServerKit({
-  kitKey,
+  apiKey: kitKey,
   baseUrl: API_BASE_URL,
   widgetBaseUrl: WIDGET_BASE_URL,
 })
