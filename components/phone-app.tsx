@@ -132,7 +132,7 @@ export function PhoneApp({
       const fresh = await fetchOnrampSession({
         url: SESSION_URL,
         body: {
-          userId: destinationAddress,
+          appUserId: destinationAddress,
           destinationAddress,
           assets: ASSETS,
         },
